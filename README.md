@@ -5,17 +5,16 @@ It does not create, update, or delete SAP data.
 
 ## Import into Open WebUI
 
-1. Open WebUI as an admin.
-2. Go to Workspace, then Tools, then the existing SAP Business One tool.
-3. Replace the code with `openwebui/sap_b1_tool.py` and save.
-4. In Valves, set the Service Layer URL, company database, user, and password.
-5. Turn `demo_mode` off after login works.
-6. Enable the tool on llama3.3:70b.
+1. Workspace, Tools, open the SAP Business One tool.
+2. Replace the code with `openwebui/sap_b1_tool.py` and save.
+3. Set Valves: Service Layer URL, company database, user, password.
+4. Turn `demo_mode` off after login works.
+5. Enable the tool on llama3.3:70b. Function calling must be Native.
 
-## Item master
+## Ship quantity
 
-`get_item_master` reads OITM plus the user-defined fields from script.sql.
-Blank fields are omitted unless `include_empty_udf` is true.
-Ask: "Show the item master and custom fields for item A00001."
+`qty_to_ship` sums open sales-order lines (`RDR1.ShipDate` and open quantity).
+Ask: "How many watches need to ship from 2026-11-01 to 2026-11-30?"
+Leave the item filter empty to include all items.
 
-Other calls: sales orders, purchase orders, [@TPOLINK], work orders, and standard BOM.
+Other calls: item master user-defined fields, sales orders, purchase orders, [@TPOLINK], work orders, and standard BOM.
