@@ -1,8 +1,8 @@
 """
 title: SAP Business One
 author: lwkenneth-akit
-version: 0.2.0
-description: Read-only SAP B1 tool. Includes get_item_master for OITM user-defined fields.
+version: 0.3.0
+description: Read-only SAP B1 tool. Includes qty_to_ship for open sales-order quantity by ship date, and item master user-defined fields.
 requirements: httpx
 """
 import json
@@ -33,6 +33,18 @@ class Tools:
             return self._dump({"ok": True, "mode": "live", "service_layer": version})
         except Exception as exc:
             return self._dump({"ok": False, "error": str(exc)})
+    async def qty_to_ship(self, date_from: str, date_to: str, item_name: str = "", __event_emitter__=None) -> str:
+        """Sum open sales-order line quantity due to ship between two dates. Use this when asked how many watches or items to ship in a month. Reads RDR1.ShipDate and open quantity. Does not change SAP.\n\n        :param date_from: Start date YYYY-MM-DD, inclusive. Example 2026-11-01.\n        :param date_to: End date YYYY-MM-DD, inclusive. Example 2026-11-30.\n        :param item_name: Optional item code or description filter. Leave empty for all items.\n        """
+        start, end = date_from.strip(), date_to.strip()
+        if len(start) != 10 or len(end) != 10:
+            return self._dump({"error": "Use dates as YYYY-MM-DD, for example 2026-11-01 and 2026-11-30."})
+        if self.valves.demo_mode:
+            return self._dump({"mode": "demo", "date_from": start, "date_to": end, "total_open_qty": 120, "line_count": 2, "by_item": [{"ItemCode": "A00001", "ItemDescription": "Watch", "open_qty": 80}, {"ItemCode": "B10020", "ItemDescription": "Watch strap", "open_qty": 40}], "source": "Demo data. Turn demo_mode off to read SAP."})
+        try:
+            rows = await self._ship_lines(start, end)
+            return self._dump(self._sum_ship_lines(rows, item_name))
+        except Exception as exc:
+            return self._dump({"error": str(exc)})
     async def search_business_partners(self, query: str, limit: int = 15, __event_emitter__=None) -> str:
         """Search customers and vendors by code, name, or tax id.\n\n        :param query: Card code, card name, or tax id.\n        :param limit: Maximum rows.\n        """
         if self.valves.demo_mode:
@@ -116,6 +128,45 @@ class Tools:
             return self._dump({"sales_order": order, "so_po_links": links})
         except Exception as exc:
             return self._dump({"error": str(exc)})
+    async def _ship_lines(self, date_from: str, date_to: str) -> list:
+        filt = "Orders/DocEntry eq Orders/DocumentLines/DocEntry and Orders/DocumentStatus eq 'bost_Open' and Orders/DocumentLines/LineStatus eq 'bost_Open' and Orders/DocumentLines/ShipDate ge '" + date_from + "' and Orders/DocumentLines/ShipDate le '" + date_to + "'"
+        expand = "Orders($select=DocEntry,DocNum,CardCode,CardName,DocumentStatus),Orders/DocumentLines($select=LineNum,ItemCode,ItemDescription,Quantity,ShipDate,RemainingOpenQuantity,OpenQuantity,LineStatus)"
+        rows = []
+        skip = 0
+        for _ in range(8):
+            data = await self._odata("/$crossjoin(Orders,Orders/DocumentLines)", {"$expand": expand, "$filter": filt, "$top": "100", "$skip": str(skip)})
+            batch = data.get("value") or []
+            rows.extend(batch)
+            if len(batch) < 100:
+                break
+            skip += 100
+        return rows
+    def _sum_ship_lines(self, rows: list, item_name: str) -> dict:
+        needle = item_name.strip().lower()
+        by_item = {}
+        lines = []
+        total = 0.0
+        for row in rows:
+            header = row.get("Orders") or {}
+            line = row.get("Orders/DocumentLines") or {}
+            code = str(line.get("ItemCode") or "")
+            desc = str(line.get("ItemDescription") or "")
+            if needle and needle not in code.lower() and needle not in desc.lower():
+                continue
+            qty = line.get("RemainingOpenQuantity")
+            if qty in (None, ""):
+                qty = line.get("OpenQuantity")
+            if qty in (None, ""):
+                qty = line.get("Quantity") or 0
+            qty = float(qty or 0)
+            total += qty
+            bucket = by_item.setdefault(code, {"ItemCode": code, "ItemDescription": desc, "open_qty": 0.0, "lines": 0})
+            bucket["open_qty"] += qty
+            bucket["lines"] += 1
+            if len(lines) < 30:
+                lines.append({"DocNum": header.get("DocNum"), "CardCode": header.get("CardCode"), "CardName": header.get("CardName"), "ItemCode": code, "ItemDescription": desc, "ShipDate": line.get("ShipDate"), "open_qty": qty})
+        items = sorted(by_item.values(), key=lambda r: r["open_qty"], reverse=True)
+        return {"total_open_qty": total, "line_count": sum(r["lines"] for r in items), "item_count": len(items), "by_item": items[:40], "lines": lines, "source": "Open sales order lines, RDR1.ShipDate, open quantity"}
     async def _item_udf(self, item_code: str) -> dict:
         merged = {}
         fields = list(ITEM_UDF_FIELDS)
